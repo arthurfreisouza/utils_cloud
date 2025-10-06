@@ -1,0 +1,200 @@
+name: Create Azure Storage Account with Role Assignment
+
+trigger: none
+
+parameters:
+- name: location
+  type: string
+  default: "westus"
+- name: RESOURCE_GROUP
+  type: string
+  default: "projArthurreis"
+- name: storageAccountName
+  displayName: 'Storage Account Name (3-24 lowercase alphanumeric)'
+  type: string
+- name: sku
+  displayName: 'Storage Account SKU'
+  type: string
+  default: 'Standard_LRS'
+- name: role
+  displayName: 'Role to Assign'
+  type: string
+  default: 'Storage Blob Data Contributor'
+- name: principalId
+  displayName: 'Principal ID (Object ID) for Role Assignment'
+  type: string
+
+variables:
+- group: Arthur_VG
+
+stages:
+- stage: CheckResources
+  displayName: 'Check Resource Group Stage'
+  jobs:
+  - job: CheckResourceGroup
+    displayName: 'Check or Create Resource Group'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Check or Create Resource Group'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >-
+          echo "Checking if resource group '${{ parameters.RESOURCE_GROUP }}' exists..."
+
+          exists=$(az group exists --name ${{ parameters.RESOURCE_GROUP }})
+
+          echo "az returned: $exists"
+
+          if [ "$exists" = "false" ]; then
+            echo "##[warning] Resource group does not exist. Creating it now..."
+            az group create --name ${{ parameters.RESOURCE_GROUP }} --location ${{ parameters.location }} --only-show-errors
+            echo "✅ Resource group created successfully."
+          else
+            echo "✅ Resource group exists."
+          fi
+
+- stage: ValidateStorageAccount
+  displayName: 'Validate Storage Account'
+  jobs:
+  - job: ValidateStorageAccountName
+    displayName: 'Validate Storage Account Name'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Validate Storage Account Name Format'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          if [[ ! "${{ parameters.storageAccountName }}" =~ ^[a-z0-9]{3,24}$ ]]; then
+            echo "##[error] Storage account name must be 3-24 lowercase alphanumeric characters"
+            exit 1
+          fi
+          echo "✅ Storage account name validation passed"
+
+- stage: CreateStorageAccount
+  displayName: 'Create Storage Account'
+  jobs:
+  - job: CreateStorageAccountJob
+    displayName: 'Create Storage Account'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Create Storage Account'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Creating storage account: ${{ parameters.storageAccountName }}"
+
+          az storage account create \
+            --name "${{ parameters.storageAccountName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --location "${{ parameters.location }}" \
+            --sku "${{ parameters.sku }}" \
+            --kind StorageV2 \
+            --access-tier Hot \
+            --allow-blob-public-access false \
+            --https-only true \
+            --min-tls-version TLS1_2 \
+            --output table
+          
+          echo "✅ Storage account created successfully"
+
+- stage: WaitForProvisioning
+  displayName: 'Wait for Storage Account Provisioning'
+  jobs:
+  - job: WaitJob
+    displayName: 'Wait 60 seconds'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: Bash@3
+      displayName: 'Sleep for 60 seconds'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "Waiting 60 seconds for storage account to be fully provisioned..."
+          sleep 60
+          echo "✅ Wait completed"
+
+- stage: AssignRole
+  displayName: 'Assign Role to Principal'
+  jobs:
+  - job: AssignRoleJob
+    displayName: 'Assign Role to Storage Account'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Assign Role to Principal'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Assigning role '${{ parameters.role }}' to principal '${{ parameters.principalId }}'"
+
+          STORAGE_ACCOUNT_ID=$(az storage account show \
+            --name "${{ parameters.storageAccountName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --query id -o tsv)
+          
+          az role assignment create \
+            --assignee "${{ parameters.principalId }}" \
+            --role "${{ parameters.role }}" \
+            --scope "$STORAGE_ACCOUNT_ID" \
+            --output table
+          
+          echo "✅ Role assignment completed successfully"
+
+- stage: SmokeTest
+  displayName: 'Smoke Test Storage Account'
+  jobs:
+  - job: SmokeTestJob
+    displayName: 'Verify Storage Account Exists'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Check Storage Account Exists'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Verifying storage account '${{ parameters.storageAccountName }}' exists..."
+
+          if az storage account show --name "${{ parameters.storageAccountName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ Storage Account '${{ parameters.storageAccountName }}' exists."
+            
+            echo "========================================"
+            echo "Storage Account Details:"
+            echo "========================================"
+            az storage account show \
+              --name "${{ parameters.storageAccountName }}" \
+              --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+              --output table
+            
+            echo ""
+            echo "Storage Account Configuration:"
+            echo "- Name: ${{ parameters.storageAccountName }}"
+            echo "- Resource Group: ${{ parameters.RESOURCE_GROUP }}"
+            echo "- Location: ${{ parameters.location }}"
+            echo "- SKU: ${{ parameters.sku }}"
+            echo "- Role Assigned: ${{ parameters.role }}"
+            echo "- Principal ID: ${{ parameters.principalId }}"
+            echo "========================================"
+          else
+            echo "❌ ##[error] ERROR: Storage Account '${{ parameters.storageAccountName }}' does not exist in resource group ${{ parameters.RESOURCE_GROUP }} or an error occurred." >&2
+            exit 1
+          fi
+
+          echo "✅ Smoke test completed successfully."
+
