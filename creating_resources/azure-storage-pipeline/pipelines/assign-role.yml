@@ -1,0 +1,21 @@
+name: Assign Role to Azure Storage Account
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  storageAccountName: ''
+  resourceGroup: ''
+  role: ''
+
+jobs:
+- job: AssignRole
+  displayName: 'Assign Role to Storage Account'
+  steps:
+  - script: |
+      chmod +x $(System.DefaultWorkingDirectory)/scripts/assign_role.sh
+      $(System.DefaultWorkingDirectory)/scripts/assign_role.sh -a $(storageAccountName) -g $(resourceGroup) -r $(role)
+    displayName: 'Assign Role'

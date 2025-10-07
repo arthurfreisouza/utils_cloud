@@ -1,0 +1,16 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  storageAccountName: '$(storageAccountName)'
+  resourceGroup: '$(resourceGroup)'
+  location: '$(location)'
+
+steps:
+- script: |
+    chmod +x scripts/create_storage_account.sh
+    ./scripts/create_storage_account.sh -a $(storageAccountName) -g $(resourceGroup) -l $(location)
+  displayName: 'Create Azure Storage Account'
