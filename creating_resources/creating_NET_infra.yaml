@@ -80,23 +80,37 @@ stages:
       inputs:
         azureSubscription: $(service_conn)
         scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
+        scriptLocation: 'inlineScript'        inlineScript: |
+          # Show actual parameter values for debugging
+          echo "Validating network resource names..."
+          echo "VNet Name: '${{ parameters.vnetName }}'"
+          echo "NSG Name: '${{ parameters.nsgName }}'"
+          echo "Subnet Name: '${{ parameters.subnetName }}'"          VNET_NAME="${{ parameters.vnetName }}"
+          NSG_NAME="${{ parameters.nsgName }}"
+          SUBNET_NAME="${{ parameters.subnetName }}"
+          
+          echo "VNet Name Length: ${#VNET_NAME}"
+          echo "NSG Name Length: ${#NSG_NAME}"
+          echo "Subnet Name Length: ${#SUBNET_NAME}"
+          
           # Validate VNet name
-          if [[ ! "${{ parameters.vnetName }}" =~ ^[a-zA-Z0-9-_\.]{2,64}$ ]]; then
-            echo "##[error] Virtual Network name must be 2-64 characters (alphanumeric, hyphens, underscores, periods)"
+          if [[ ! "$VNET_NAME" =~ ^[a-zA-Z0-9-_\.]{2,64}$ ]]; then
+            echo "##[error] Virtual Network name '$VNET_NAME' must be 2-64 characters (alphanumeric, hyphens, underscores, periods)"
+            echo "##[error] Actual length: ${#VNET_NAME} characters"
             exit 1
           fi
           
           # Validate NSG name
-          if [[ ! "${{ parameters.nsgName }}" =~ ^[a-zA-Z0-9-_\.]{1,80}$ ]]; then
-            echo "##[error] Network Security Group name must be 1-80 characters (alphanumeric, hyphens, underscores, periods)"
+          if [[ ! "$NSG_NAME" =~ ^[a-zA-Z0-9-_\.]{1,80}$ ]]; then
+            echo "##[error] Network Security Group name '$NSG_NAME' must be 1-80 characters (alphanumeric, hyphens, underscores, periods)"
+            echo "##[error] Actual length: ${#NSG_NAME} characters"
             exit 1
           fi
           
           # Validate subnet name
-          if [[ ! "${{ parameters.subnetName }}" =~ ^[a-zA-Z0-9-_\.]{1,80}$ ]]; then
-            echo "##[error] Subnet name must be 1-80 characters (alphanumeric, hyphens, underscores, periods)"
+          if [[ ! "$SUBNET_NAME" =~ ^[a-zA-Z0-9-_\.]{1,80}$ ]]; then
+            echo "##[error] Subnet name '$SUBNET_NAME' must be 1-80 characters (alphanumeric, hyphens, underscores, periods)"
+            echo "##[error] Actual length: ${#SUBNET_NAME} characters"
             exit 1
           fi
           
