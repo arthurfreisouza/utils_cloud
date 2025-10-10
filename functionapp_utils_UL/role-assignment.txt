@@ -1,0 +1,68 @@
+trigger: none
+pool: devopsvmss0
+
+parameters:
+  - name: resourceGroupName
+    displayName: Resource Group Name
+    type: string
+  - name: roleName
+    displayName: Role Name (e.g., Contributor, Reader)
+    type: string
+  - name: principalObjectId
+    displayName: Principal Object ID (User, Group, or Service Principal)
+    type: string
+  - name: principalType
+    displayName: Principal Type (User, Group, ServicePrincipal)
+    type: string
+    default: ServicePrincipal
+
+variables:
+  - group: subscription_dev_qa
+  - name: AZURE_SUBSCRIPTION_ID
+    value: bcbe1df6-56af-428f-9ac9-20c2a0384a58
+
+steps:
+  - task: AzureCLI@2
+    displayName: 'Assign role to Resource Group'
+    inputs:
+      azureSubscription: '$(dev_service_connection)'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Assigning role '${{ parameters.roleName }}' to principal '${{ parameters.principalObjectId }}' (type: '${{ parameters.principalType }}') in resource group '${{ parameters.resourceGroupName }}'"
+
+        # Assign the role at the resource group scope
+        az role assignment create \
+          --assignee "${{ parameters.principalObjectId }}" \
+          --role "${{ parameters.roleName }}" \
+          --scope "/subscriptions/$(AZURE_SUBSCRIPTION_ID)/resourceGroups/${{ parameters.resourceGroupName }}" \
+          --output json
+
+        echo "Role assignment initiated."
+
+  - script: |
+      echo "Waiting 1 minute before checking role assignment..."
+      sleep 60
+    displayName: 'Wait 1 minute'
+
+  - task: AzureCLI@2
+    displayName: 'Check if role assignment exists'
+    inputs:
+      azureSubscription: '$(dev_service_connection)'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Checking if '${{ parameters.roleName }}' is assigned to '${{ parameters.principalObjectId }}' in '${{ parameters.resourceGroupName }}'"
+
+        existing=$(az role assignment list \
+          --assignee "${{ parameters.principalObjectId }}" \
+          --role "${{ parameters.roleName }}" \
+          --scope "/subscriptions/$(AZURE_SUBSCRIPTION_ID)/resourceGroups/${{ parameters.resourceGroupName }}" \
+          --query "[0].id" -o tsv)
+
+        if [ -n "$existing" ]; then
+          echo "SUCCESS: Role '${{ parameters.roleName }}' is assigned to '${{ parameters.principalObjectId }}' in '${{ parameters.resourceGroupName }}'."
+        else
+          echo "ERROR: Role assignment not found after waiting. Please check Azure permissions and try again."
+          exit 1
+        fi

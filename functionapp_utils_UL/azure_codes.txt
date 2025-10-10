@@ -1,0 +1,39 @@
+************************************** CODES *************************************
+az group list --query "[].name" --output tsv # LIST all the resource groups.
+
+az resource list --resource-group <my_resource_group> --output table # LIST all the resource in a resource group.
+
+for rg in $(az group list --query "[].name" --output tsv); do # DELETE all the resource groups
+  echo "Deleting resource group: $rg"
+  az group delete --name "$rg" --yes --no-wait
+done
+
+
+
+az deployment group create \
+  --resource-group <your-rg> \
+  --template-file ./main.bicep \
+  --parameters adminUsername='youruser' adminPassword='YourP@ssw0rd!'
+
+# Update the package list
+sudo apt update && sudo apt upgrade -y
+
+# Install the XFCE desktop environment
+sudo apt install xfce4 -y
+
+
+
+# Install xrdp
+sudo apt install xrdp -y
+
+# Add the xrdp user to the correct group to enable the connection
+sudo adduser xrdp ssl-cert
+
+# Restart the xrdp service to apply changes
+sudo systemctl restart xrdp
+
+
+$ az resource show --resource-group rg-aide-infra-dev --name aide-func-app-dev-ne --resource-type "Microsoft.Web/sites" --output json # Shows details of resources
+$ az webapp config access-restriction show --resource-group rg-aide-infra-dev --name aide-func-app-dev-ne --output json # Shows restrictions of resources
+
+

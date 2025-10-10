@@ -1,0 +1,386 @@
+import {
+  environmentType
+  productAcronymType
+} from 'modules/types.bicep'
+
+@description('Location for resources')
+param location string = resourceGroup().location
+
+@description('Product Name')
+param productName productAcronymType
+
+@description('Environment for deployment (e.g., dev, qa, stg, prod)')
+param environment environmentType
+
+@description('SKU for the App Service Plan')
+param appServicePlanSku string
+
+@description('Enable CORS for all origins (use with caution)')
+param enableCorsAll bool = false
+
+// Acronym mapping for Azure locations
+var locationAcronymMapping = {
+  northeurope: 'ne'
+  northcentralus: 'ncus'
+  southcentralus: 'scus'
+  centralus: 'cus'
+}
+
+// Location acronym for resources
+var locationAcronym = locationAcronymMapping[location]
+
+var tags = {
+  CreatedBy: 'AIL.AIDE.FunctionApp'
+  Owner: 'AIL AIDE Squad'
+  Purpose: 'AIL AIDE Function App Provisioning'
+  Environment: environment
+}
+
+var functionAppName string = '${productName}-func-app-${environment}-${locationAcronym}'
+
+var storageAccountName string = '${replace(productName, '-', '')}func${environment}${locationAcronym}'
+
+var appServicePlanName string = 'plan-${functionAppName}'
+
+// Network Security Group name
+var nsgName string = 'nsg-${functionAppName}'
+
+// Virtual Network name
+var vnetName string = 'vnet-${functionAppName}'
+
+// DevOps VNet reference for storage access
+var devopsVnetName string = 'vnet-northeurope-12'
+var devopsResourceGroup string = 'devopsvmss'
+var devopsSubnetName string = 'snet-northeurope-1'
+
+// Log Analytics Workspace name
+var workspaceName string = 'log-${functionAppName}'
+
+// Application Insights name
+var appInsightsName string = 'insights-${functionAppName}'
+
+resource appServicePlan 'Microsoft.Web/serverfarms@2024-04-01' = {
+  name: appServicePlanName
+  location: location
+  tags: tags
+  sku: {
+    name: appServicePlanSku
+  }
+  kind: 'linux'
+  properties: {
+    reserved: true
+  }
+}
+
+resource devopsVnet 'Microsoft.Network/virtualNetworks@2024-05-01' existing = {
+  name: devopsVnetName
+  scope: resourceGroup(devopsResourceGroup)
+}
+
+resource storageAccount 'Microsoft.Storage/storageAccounts@2024-01-01' = {
+  name: storageAccountName
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    accessTier: 'Hot'
+    supportsHttpsTrafficOnly: true
+    publicNetworkAccess: 'Enabled'
+    networkAcls: {
+      defaultAction: 'Deny'
+      bypass: 'AzureServices'
+      virtualNetworkRules: [
+        {
+          id: '${vnet.id}/subnets/aide-function-subnet'
+        }
+        {
+          id: '${vnet.id}/subnets/aide-storage-subnet'
+        }
+        {
+          id: '${devopsVnet.id}/subnets/${devopsSubnetName}'
+        }
+      ]
+    }
+  }
+}
+
+resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
+  name: functionAppName
+  location: location
+  tags: tags
+  kind: 'functionapp,linux'
+  properties: {
+    serverFarmId: appServicePlan.id
+    vnetRouteAllEnabled: true
+    vnetImagePullEnabled: true
+    vnetContentShareEnabled: true
+    siteConfig: {
+      ipSecurityRestrictionsDefaultAction: 'Deny'
+      scmIpSecurityRestrictionsDefaultAction: 'Deny'
+      appSettings: [
+        {
+          name: 'FUNCTIONS_EXTENSION_VERSION'
+          value: '~4'
+        }
+        {
+          name: 'FUNCTIONS_WORKER_RUNTIME'
+          value: 'python'
+        }
+        {
+          name: 'AzureWebJobsStorage'
+          value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value};EndpointSuffix=core.windows.net'
+        }
+        {
+          name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
+          value: appInsights.properties.InstrumentationKey
+        }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsights.properties.ConnectionString
+        }
+        {
+          name: 'WEBSITE_VNET_ROUTE_ALL'
+          value: '1'
+        }
+        {
+          name: 'WEBSITE_DNS_SERVER'
+          value: '168.63.129.16'
+        }
+      ]
+      cors: {
+        allowedOrigins: enableCorsAll ? ['*'] : [
+          'https://portal.azure.com'
+        ]
+      }
+      linuxFxVersion: 'Python|3.12'
+      alwaysOn: true
+      ipSecurityRestrictions: [
+        {
+          action: 'Allow'
+          description: 'Allow DevOps subnet'
+          ipAddress: '10.1.0.0/24'
+          name: 'DevOpsSubnet'
+          priority: 100
+        }
+        {
+          action: 'Allow'
+          description: 'Allow DevOps VNet subnet'
+          vnetSubnetResourceId: '${devopsVnet.id}/subnets/${devopsSubnetName}'
+          name: 'DevOpsVNetSubnet'
+          priority: 110
+        }
+        {
+          action: 'Allow'
+          description: 'Allow function subnet'
+          vnetSubnetResourceId: '${vnet.id}/subnets/aide-function-subnet'
+          name: 'FunctionSubnet'
+          priority: 200
+        }
+        {
+          action: 'Allow'
+          description: 'Allow storage subnet'
+          vnetSubnetResourceId: '${vnet.id}/subnets/aide-storage-subnet'
+          name: 'StorageSubnet'
+          priority: 210
+        }
+      ]
+      scmIpSecurityRestrictions: [
+        {
+          action: 'Allow'
+          description: 'Allow DevOps subnet for deployment'
+          ipAddress: '10.1.0.0/24'
+          name: 'DevOpsSubnetSCM'
+          priority: 100
+        }
+        {
+          action: 'Allow'
+          description: 'Allow DevOps VNet subnet for deployment'
+          vnetSubnetResourceId: '${devopsVnet.id}/subnets/${devopsSubnetName}'
+          name: 'DevOpsVNetSubnetSCM'
+          priority: 110
+        }
+        {
+          action: 'Allow'
+          description: 'Allow Azure DevOps services'
+          tag: 'ServiceTag'
+          ipAddress: 'AzureDevOps'
+          name: 'AzureDevOps'
+          priority: 200
+        }
+        {
+          action: 'Allow'
+          description: 'Allow Azure Cloud for deployment'
+          tag: 'ServiceTag'
+          ipAddress: 'AzureCloud'
+          name: 'AzureCloudSCM'
+          priority: 210
+        }
+      ]
+      scmIpSecurityRestrictionsUseMain: false
+    }
+    httpsOnly: true
+    publicNetworkAccess: 'Enabled'
+    virtualNetworkSubnetId: '${vnet.id}/subnets/aide-function-subnet'
+  }
+}
+
+resource nsg 'Microsoft.Network/networkSecurityGroups@2024-07-01' = {
+  name: nsgName
+  location: location
+  tags: tags
+  properties: {
+    securityRules: [
+      {
+        name: 'AllowAzureCloudOutbound'
+        properties: {
+          priority: 100
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefix: '*'
+          sourcePortRange: '*'
+          destinationAddressPrefix: 'AzureCloud'
+          destinationPortRange: '*'
+        }
+      }
+      {
+        name: 'AllowDevOpsInbound'
+        properties: {
+          priority: 200
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: '10.1.0.0/24'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '443'
+        }
+      }
+      {
+        name: 'AllowVNetInbound'
+        properties: {
+          priority: 300
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefix: '10.0.0.0/16'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '10.0.0.0/16'
+          destinationPortRange: '*'
+        }
+      }
+      {
+        name: 'AllowVNetOutbound'
+        properties: {
+          priority: 400
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefix: '10.0.0.0/16'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '10.0.0.0/16'
+          destinationPortRange: '*'
+        }
+      }
+      {
+        name: 'AllowStorageServiceEndpoint'
+        properties: {
+          priority: 500
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: '10.0.0.0/16'
+          sourcePortRange: '*'
+          destinationAddressPrefix: 'Storage'
+          destinationPortRange: '443'
+        }
+      }
+    ]
+  }
+}
+
+resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+  name: vnetName
+  location: location
+  tags: tags
+  properties: {
+    addressSpace: {
+      addressPrefixes: [ '10.0.0.0/16' ]
+    }
+    subnets: [
+      {
+        name: 'aide-function-subnet'
+        properties: {
+          addressPrefix: '10.0.1.0/24'
+          networkSecurityGroup: {
+            id: nsg.id
+          }
+          delegations: [
+            {
+              name: 'web-delegation'
+              properties: {
+                serviceName: 'Microsoft.Web/serverFarms'
+              }
+            }
+          ]
+          serviceEndpoints: [
+            {
+              service: 'Microsoft.Storage'
+            }
+            {
+              service: 'Microsoft.KeyVault'
+            }
+          ]
+        }
+      }
+      {
+        name: 'aide-storage-subnet'
+        properties: {
+          addressPrefix: '10.0.2.0/24'
+          networkSecurityGroup: {
+            id: nsg.id
+          }
+          serviceEndpoints: [
+            {
+              service: 'Microsoft.Storage'
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2025-02-01' = {
+  name: workspaceName
+  location: location
+  tags: tags
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+  }
+}
+
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: appInsightsName
+  location: location
+  tags: tags
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    Request_Source: 'rest'
+    RetentionInDays: 30
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+    WorkspaceResourceId: logAnalytics.id
+  }
+}

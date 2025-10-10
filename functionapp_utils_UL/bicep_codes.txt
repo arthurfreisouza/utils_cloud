@@ -1,0 +1,3 @@
+
+********************************************* 	BICEP CODES ***************************************************************
+az bicep build --file <my_file>.bicep => this is going to create a json file from your .bicep file (transpilation).

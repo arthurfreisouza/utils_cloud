@@ -1,0 +1,416 @@
+name: Create Azure Function App with Role Assignment
+
+trigger: none
+
+parameters:
+- name: location
+  type: string
+  default: "eastus"
+- name: RESOURCE_GROUP
+  type: string
+  default: "projArthurreis"
+- name: functionAppName
+  displayName: 'Function App Name'
+  type: string
+- name: storageAccountName
+  displayName: 'Storage Account Name (existing or new)'
+  type: string
+- name: appServicePlanName
+  displayName: 'App Service Plan Name (existing or new)'
+  type: string
+- name: runtime
+  displayName: 'Runtime Stack'
+  type: string
+  default: 'python'
+  values:
+  - python
+  - node
+  - dotnet
+  - java
+  - powershell
+- name: runtimeVersion
+  displayName: 'Runtime Version'
+  type: string
+  default: '3.11'
+- name: sku
+  displayName: 'App Service Plan SKU'
+  type: string
+  default: 'Y1'
+- name: osType
+  displayName: 'Operating System'
+  type: string
+  default: 'Linux'
+  values:
+  - Linux
+  - Windows
+- name: role
+  displayName: 'Role to Assign'
+  type: string
+  default: 'Website Contributor'
+- name: principalId
+  displayName: 'Principal ID (Object ID) for Role Assignment'
+  type: string
+
+variables:
+- group: Arthur_VG
+
+stages:
+- stage: CheckResources
+  displayName: 'Check Resource Group Stage'
+  jobs:
+  - job: CheckResourceGroup
+    displayName: 'Check or Create Resource Group'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Check or Create Resource Group'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >-
+          echo "Checking if resource group '${{ parameters.RESOURCE_GROUP }}' exists..."
+
+          exists=$(az group exists --name ${{ parameters.RESOURCE_GROUP }})
+
+          echo "az returned: $exists"
+
+          if [ "$exists" = "false" ]; then
+            echo "##[warning] Resource group does not exist. Creating it now..."
+            az group create --name ${{ parameters.RESOURCE_GROUP }} --location ${{ parameters.location }} --only-show-errors
+            echo "✅ Resource group created successfully."
+          else
+            echo "✅ Resource group exists."
+          fi
+
+- stage: ValidateFunctionApp
+  displayName: 'Validate Function App Configuration'
+  jobs:
+  - job: ValidateFunctionAppConfig
+    displayName: 'Validate Function App Configuration'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Validate Function App Configuration'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Validate Function App name (globally unique)
+          if [[ ! "${{ parameters.functionAppName }}" =~ ^[a-zA-Z0-9-]{2,60}$ ]]; then
+            echo "##[error] Function App name must be 2-60 characters (alphanumeric and hyphens only)"
+            exit 1
+          fi
+          
+          # Check Function App name availability
+          AVAILABILITY=$(az functionapp list --query "[?name=='${{ parameters.functionAppName }}'].name" -o tsv)
+          if [ -n "$AVAILABILITY" ]; then
+            echo "##[warning] Function App name '${{ parameters.functionAppName }}' might already exist globally"
+          fi
+          
+          # Validate Storage Account name
+          if [[ ! "${{ parameters.storageAccountName }}" =~ ^[a-z0-9]{3,24}$ ]]; then
+            echo "##[error] Storage Account name must be 3-24 lowercase letters and numbers only"
+            exit 1
+          fi
+          
+          # Validate App Service Plan name
+          if [[ ! "${{ parameters.appServicePlanName }}" =~ ^[a-zA-Z0-9-]{1,40}$ ]]; then
+            echo "##[error] App Service Plan name must be 1-40 characters (alphanumeric and hyphens)"
+            exit 1
+          fi
+          
+          echo "✅ Function App configuration validation passed"
+
+- stage: CreateStorageAccount
+  displayName: 'Create Storage Account'
+  jobs:
+  - job: CreateStorageJob
+    displayName: 'Create or Verify Storage Account'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Create Storage Account'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Checking if storage account '${{ parameters.storageAccountName }}' exists..."
+
+          if az storage account show --name "${{ parameters.storageAccountName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ Storage account already exists."
+          else
+            echo "Creating storage account: ${{ parameters.storageAccountName }}"
+            az storage account create \
+              --name "${{ parameters.storageAccountName }}" \
+              --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+              --location "${{ parameters.location }}" \
+              --sku Standard_LRS \
+              --kind StorageV2 \
+              --output table
+            echo "✅ Storage account created successfully"
+          fi
+
+- stage: CreateAppServicePlan
+  displayName: 'Create App Service Plan'
+  jobs:
+  - job: CreateAppServicePlanJob
+    displayName: 'Create or Verify App Service Plan'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Create App Service Plan'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Checking if App Service Plan '${{ parameters.appServicePlanName }}' exists..."
+
+          if az appservice plan show --name "${{ parameters.appServicePlanName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ App Service Plan already exists."
+          else
+            echo "Creating App Service Plan: ${{ parameters.appServicePlanName }}"
+            
+            if [ "${{ parameters.osType }}" = "Linux" ]; then
+              az appservice plan create \
+                --name "${{ parameters.appServicePlanName }}" \
+                --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+                --location "${{ parameters.location }}" \
+                --sku "${{ parameters.sku }}" \
+                --is-linux \
+                --output table
+            else
+              az appservice plan create \
+                --name "${{ parameters.appServicePlanName }}" \
+                --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+                --location "${{ parameters.location }}" \
+                --sku "${{ parameters.sku }}" \
+                --output table
+            fi
+            
+            echo "✅ App Service Plan created successfully"
+          fi
+
+- stage: CreateFunctionApp
+  displayName: 'Create Function App'
+  jobs:
+  - job: CreateFunctionAppJob
+    displayName: 'Create Function App'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Create Function App'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Creating Function App: ${{ parameters.functionAppName }}"
+
+          if [ "${{ parameters.osType }}" = "Linux" ]; then
+            az functionapp create \
+              --name "${{ parameters.functionAppName }}" \
+              --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+              --plan "${{ parameters.appServicePlanName }}" \
+              --storage-account "${{ parameters.storageAccountName }}" \
+              --runtime "${{ parameters.runtime }}" \
+              --runtime-version "${{ parameters.runtimeVersion }}" \
+              --os-type Linux \
+              --functions-version 4 \
+              --output table
+          else
+            az functionapp create \
+              --name "${{ parameters.functionAppName }}" \
+              --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+              --plan "${{ parameters.appServicePlanName }}" \
+              --storage-account "${{ parameters.storageAccountName }}" \
+              --runtime "${{ parameters.runtime }}" \
+              --runtime-version "${{ parameters.runtimeVersion }}" \
+              --os-type Windows \
+              --functions-version 4 \
+              --output table
+          fi
+          
+          echo "✅ Function App created successfully"
+
+- stage: ConfigureFunctionApp
+  displayName: 'Configure Function App Settings'
+  jobs:
+  - job: ConfigureFunctionAppJob
+    displayName: 'Configure Function App'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Configure Function App Settings'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Configuring Function App settings..."
+
+          # Enable Application Insights (if available)
+          az functionapp config appsettings set \
+            --name "${{ parameters.functionAppName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --settings FUNCTIONS_WORKER_RUNTIME=${{ parameters.runtime }} \
+            --output table
+          
+          # Set CORS if needed (allow all origins for development)
+          az functionapp cors add \
+            --name "${{ parameters.functionAppName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --allowed-origins "*" \
+            --output table || true
+          
+          echo "✅ Function App configured successfully"
+
+- stage: WaitForProvisioning
+  displayName: 'Wait for Function App Provisioning'
+  jobs:
+  - job: WaitJob
+    displayName: 'Wait 45 seconds'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: Bash@3
+      displayName: 'Sleep for 45 seconds'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "Waiting 45 seconds for Function App to be fully provisioned..."
+          sleep 45
+          echo "✅ Wait completed"
+
+- stage: AssignRole
+  displayName: 'Assign Role to Principal'
+  jobs:
+  - job: AssignRoleJob
+    displayName: 'Assign Role to Function App'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Assign Role to Principal'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Assigning role '${{ parameters.role }}' to principal '${{ parameters.principalId }}'"
+
+          # Get Function App Resource ID for role assignment scope
+          FUNCTIONAPP_RESOURCE_ID=$(az functionapp show \
+            --name "${{ parameters.functionAppName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --query id -o tsv)
+          
+          az role assignment create \
+            --assignee "${{ parameters.principalId }}" \
+            --role "${{ parameters.role }}" \
+            --scope "$FUNCTIONAPP_RESOURCE_ID" \
+            --output table
+          
+          echo "✅ Role assignment completed successfully"
+
+- stage: SmokeTest
+  displayName: 'Smoke Test Function App'
+  jobs:
+  - job: SmokeTestJob
+    displayName: 'Verify Function App Resources Exist'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Check Function App Infrastructure Exists'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Verifying Function App infrastructure exists..."
+          
+          # Check Function App
+          if az functionapp show --name "${{ parameters.functionAppName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ Function App '${{ parameters.functionAppName }}' exists."
+          else
+            echo "❌ ##[error] ERROR: Function App '${{ parameters.functionAppName }}' does not exist." >&2
+            exit 1
+          fi
+          
+          # Check Storage Account
+          if az storage account show --name "${{ parameters.storageAccountName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ Storage Account '${{ parameters.storageAccountName }}' exists."
+          else
+            echo "❌ ##[error] ERROR: Storage Account '${{ parameters.storageAccountName }}' does not exist." >&2
+            exit 1
+          fi
+          
+          # Check App Service Plan
+          if az appservice plan show --name "${{ parameters.appServicePlanName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ App Service Plan '${{ parameters.appServicePlanName }}' exists."
+          else
+            echo "❌ ##[error] ERROR: App Service Plan '${{ parameters.appServicePlanName }}' does not exist." >&2
+            exit 1
+          fi
+          
+          # Get Function App URL
+          FUNCTION_APP_URL=$(az functionapp show --name "${{ parameters.functionAppName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" --query "defaultHostName" -o tsv)
+          
+          echo "========================================"
+          echo "Azure Function App Infrastructure Details:"
+          echo "========================================"
+          
+          echo ""
+          echo "Function App Details:"
+          az functionapp show \
+            --name "${{ parameters.functionAppName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --output table
+          
+          echo ""
+          echo "App Service Plan Details:"
+          az appservice plan show \
+            --name "${{ parameters.appServicePlanName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --output table
+          
+          echo ""
+          echo "Storage Account Details:"
+          az storage account show \
+            --name "${{ parameters.storageAccountName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --output table
+          
+          echo ""
+          echo "Function App Configuration:"
+          echo "- Function App Name: ${{ parameters.functionAppName }}"
+          echo "- Function App URL: https://$FUNCTION_APP_URL"
+          echo "- Runtime: ${{ parameters.runtime }} ${{ parameters.runtimeVersion }}"
+          echo "- OS Type: ${{ parameters.osType }}"
+          echo "- App Service Plan: ${{ parameters.appServicePlanName }}"
+          echo "- SKU: ${{ parameters.sku }}"
+          echo "- Storage Account: ${{ parameters.storageAccountName }}"
+          echo "- Resource Group: ${{ parameters.RESOURCE_GROUP }}"
+          echo "- Location: ${{ parameters.location }}"
+          echo "- Role Assigned: ${{ parameters.role }}"
+          echo "- Principal ID: ${{ parameters.principalId }}"
+          
+          echo ""
+          echo "Function App Settings:"
+          az functionapp config appsettings list \
+            --name "${{ parameters.functionAppName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --query "[?name=='FUNCTIONS_WORKER_RUNTIME' || name=='FUNCTIONS_EXTENSION_VERSION'].{Name:name,Value:value}" \
+            --output table
+          
+          echo "======================================="
+          echo "✅ Function App smoke test completed successfully."
+          echo "🚀 Your Function App is ready at: https://$FUNCTION_APP_URL"
