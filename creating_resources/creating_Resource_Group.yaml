@@ -110,7 +110,7 @@ stages:
         azureSubscription: $(service_conn)
         scriptType: 'bash'
         scriptLocation: 'inlineScript'
-        inlineScript: >
+        inlineScript: |
           echo "Creating Resource Group: ${{ parameters.RESOURCE_GROUP }}"
 
           az group create \

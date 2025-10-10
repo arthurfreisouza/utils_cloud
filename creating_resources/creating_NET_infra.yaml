@@ -325,4 +325,9 @@ stages:
           echo "- Principal ID: ${{ parameters.principalId }}"
           
           echo "========================================"
+          echo "✅ Network infrastructure smoke test completed successfully."       echo "- Location: ${{ parameters.location }}"
+          echo "- Role Assigned: ${{ parameters.role }}"
+          echo "- Principal ID: ${{ parameters.principalId }}"
+          
+          echo "========================================"
           echo "✅ Network infrastructure smoke test completed successfully."
