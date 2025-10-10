@@ -152,7 +152,7 @@ stages:
         azureSubscription: $(service_conn)
         scriptType: 'bash'
         scriptLocation: 'inlineScript'
-        inlineScript: >
+        inlineScript: |
           echo "Assigning role '${{ parameters.role }}' to principal '${{ parameters.principalId }}'"
 
           # Get Resource Group ID for role assignment scope
