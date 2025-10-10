@@ -80,12 +80,15 @@ stages:
       inputs:
         azureSubscription: $(service_conn)
         scriptType: 'bash'
-        scriptLocation: 'inlineScript'        inlineScript: |
+        scriptLocation: 'inlineScript'
+        inlineScript: |
           # Show actual parameter values for debugging
           echo "Validating network resource names..."
           echo "VNet Name: '${{ parameters.vnetName }}'"
           echo "NSG Name: '${{ parameters.nsgName }}'"
-          echo "Subnet Name: '${{ parameters.subnetName }}'"          VNET_NAME="${{ parameters.vnetName }}"
+          echo "Subnet Name: '${{ parameters.subnetName }}'"
+          
+          VNET_NAME="${{ parameters.vnetName }}"
           NSG_NAME="${{ parameters.nsgName }}"
           SUBNET_NAME="${{ parameters.subnetName }}"
           
@@ -226,7 +229,7 @@ stages:
         azureSubscription: $(service_conn)
         scriptType: 'bash'
         scriptLocation: 'inlineScript'
-        inlineScript: >
+        inlineScript: |
           echo "Assigning role '${{ parameters.role }}' to principal '${{ parameters.principalId }}'"
 
           # Get Resource Group ID for role assignment scope
@@ -318,6 +321,11 @@ stages:
           echo "- NSG Name: ${{ parameters.nsgName }}"
           echo "- Resource Group: ${{ parameters.RESOURCE_GROUP }}"
           echo "- Location: ${{ parameters.location }}"
+          echo "- Role Assigned: ${{ parameters.role }}"
+          echo "- Principal ID: ${{ parameters.principalId }}"
+          
+          echo "========================================"
+          echo "✅ Network infrastructure smoke test completed successfully."       echo "- Location: ${{ parameters.location }}"
           echo "- Role Assigned: ${{ parameters.role }}"
           echo "- Principal ID: ${{ parameters.principalId }}"
           
