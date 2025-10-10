@@ -1,0 +1,303 @@
+name: Remove Azure Role Assignment
+
+trigger: none
+
+parameters:
+- name: RESOURCE_GROUP
+  displayName: 'Resource Group Name'
+  type: string
+  default: "projArthurreis"
+- name: principalId
+  displayName: 'Principal ID (Object ID) to Remove Role From'
+  type: string
+- name: role
+  displayName: 'Role to Remove'
+  type: string
+  default: 'Contributor'
+- name: scope
+  displayName: 'Scope Type'
+  type: string
+  default: 'resourceGroup'
+  values:
+  - resourceGroup
+  - subscription
+  - specificResource
+- name: resourceName
+  displayName: 'Specific Resource Name (if scope is specificResource)'
+  type: string
+  default: ''
+- name: resourceType
+  displayName: 'Resource Type (if scope is specificResource)'
+  type: string
+  default: ''
+  values:
+  - ''
+  - 'Microsoft.Storage/storageAccounts'
+  - 'Microsoft.Web/sites'
+  - 'Microsoft.Network/virtualNetworks'
+  - 'Microsoft.Compute/virtualMachines'
+  - 'Microsoft.Network/networkSecurityGroups'
+  - 'Microsoft.CognitiveServices/accounts'
+- name: confirmRemoval
+  displayName: 'Confirm Role Removal (type "YES" to confirm)'
+  type: string
+  default: 'NO'
+
+variables:
+- group: Arthur_VG
+
+stages:
+- stage: ValidateInputs
+  displayName: 'Validate Removal Parameters'
+  jobs:
+  - job: ValidateJob
+    displayName: 'Validate Role Removal Parameters'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Validate Parameters'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Validating role removal parameters..."
+          
+          # Check confirmation
+          if [ "${{ parameters.confirmRemoval }}" != "YES" ]; then
+            echo "##[error] Role removal not confirmed. Please set confirmRemoval parameter to 'YES' to proceed."
+            echo "##[error] Current value: '${{ parameters.confirmRemoval }}'"
+            exit 1
+          fi
+          
+          # Validate Principal ID format (should be a GUID)
+          PRINCIPAL_ID="${{ parameters.principalId }}"
+          if [[ ! "$PRINCIPAL_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            echo "##[error] Principal ID must be a valid GUID format"
+            echo "##[error] Provided: '$PRINCIPAL_ID'"
+            exit 1
+          fi
+          
+          # Validate specific resource parameters if scope is specificResource
+          if [ "${{ parameters.scope }}" = "specificResource" ]; then
+            if [ -z "${{ parameters.resourceName }}" ] || [ -z "${{ parameters.resourceType }}" ]; then
+              echo "##[error] Resource name and resource type must be provided when scope is 'specificResource'"
+              exit 1
+            fi
+          fi
+          
+          echo "✅ Parameters validation passed"
+          echo "- Principal ID: ${{ parameters.principalId }}"
+          echo "- Role: ${{ parameters.role }}"
+          echo "- Scope: ${{ parameters.scope }}"
+          echo "- Resource Group: ${{ parameters.RESOURCE_GROUP }}"
+          if [ "${{ parameters.scope }}" = "specificResource" ]; then
+            echo "- Resource Name: ${{ parameters.resourceName }}"
+            echo "- Resource Type: ${{ parameters.resourceType }}"
+          fi
+
+- stage: ListCurrentRoles
+  displayName: 'List Current Role Assignments'
+  jobs:
+  - job: ListRolesJob
+    displayName: 'Show Current Role Assignments'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'List Current Role Assignments'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Listing current role assignments for principal '${{ parameters.principalId }}'..."
+          
+          # Determine the scope
+          case "${{ parameters.scope }}" in
+            "resourceGroup")
+              SCOPE_ID=$(az group show --name "${{ parameters.RESOURCE_GROUP }}" --query id -o tsv)
+              SCOPE_NAME="Resource Group: ${{ parameters.RESOURCE_GROUP }}"
+              ;;
+            "subscription")
+              SCOPE_ID=$(az account show --query id -o tsv)
+              SCOPE_NAME="Subscription: $(az account show --query name -o tsv)"
+              ;;
+            "specificResource")
+              SCOPE_ID=$(az resource show \
+                --name "${{ parameters.resourceName }}" \
+                --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+                --resource-type "${{ parameters.resourceType }}" \
+                --query id -o tsv)
+              SCOPE_NAME="Resource: ${{ parameters.resourceName }} (${{ parameters.resourceType }})"
+              ;;
+          esac
+          
+          echo "Scope: $SCOPE_NAME"
+          echo "Scope ID: $SCOPE_ID"
+          echo ""
+          
+          echo "Current role assignments for this principal at this scope:"
+          az role assignment list \
+            --assignee "${{ parameters.principalId }}" \
+            --scope "$SCOPE_ID" \
+            --output table \
+            --query "[].{Role:roleDefinitionName,Scope:scope,Principal:principalName}"
+          
+          echo ""
+          echo "Checking if specific role '${{ parameters.role }}' exists..."
+          ROLE_EXISTS=$(az role assignment list \
+            --assignee "${{ parameters.principalId }}" \
+            --role "${{ parameters.role }}" \
+            --scope "$SCOPE_ID" \
+            --query "[].roleDefinitionName" -o tsv)
+          
+          if [ -z "$ROLE_EXISTS" ]; then
+            echo "⚠️  ##[warning] Role '${{ parameters.role }}' is not currently assigned to this principal at this scope"
+          else
+            echo "✅ Role '${{ parameters.role }}' found and will be removed"
+          fi
+
+- stage: RemoveRole
+  displayName: 'Remove Role Assignment'
+  jobs:
+  - job: RemoveRoleJob
+    displayName: 'Remove Role Assignment'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Remove Role Assignment'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Removing role assignment..."
+          echo "- Principal: ${{ parameters.principalId }}"
+          echo "- Role: ${{ parameters.role }}"
+          echo "- Scope: ${{ parameters.scope }}"
+          
+          # Determine the scope
+          case "${{ parameters.scope }}" in
+            "resourceGroup")
+              SCOPE_ID=$(az group show --name "${{ parameters.RESOURCE_GROUP }}" --query id -o tsv)
+              ;;
+            "subscription")
+              SCOPE_ID=$(az account show --query id -o tsv)
+              ;;
+            "specificResource")
+              SCOPE_ID=$(az resource show \
+                --name "${{ parameters.resourceName }}" \
+                --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+                --resource-type "${{ parameters.resourceType }}" \
+                --query id -o tsv)
+              ;;
+          esac
+          
+          echo "Scope ID: $SCOPE_ID"
+          echo ""
+          
+          # Check if role assignment exists before trying to remove
+          ROLE_EXISTS=$(az role assignment list \
+            --assignee "${{ parameters.principalId }}" \
+            --role "${{ parameters.role }}" \
+            --scope "$SCOPE_ID" \
+            --query "[].roleDefinitionName" -o tsv)
+          
+          if [ -z "$ROLE_EXISTS" ]; then
+            echo "ℹ️  Role '${{ parameters.role }}' is not assigned to this principal at this scope"
+            echo "##[warning] Nothing to remove - role assignment does not exist"
+          else
+            echo "Removing role assignment..."
+            az role assignment delete \
+              --assignee "${{ parameters.principalId }}" \
+              --role "${{ parameters.role }}" \
+              --scope "$SCOPE_ID" \
+              --output table
+            
+            if [ $? -eq 0 ]; then
+              echo "✅ Role assignment removed successfully"
+            else
+              echo "❌ ##[error] Failed to remove role assignment"
+              exit 1
+            fi
+          fi
+
+- stage: VerifyRemoval
+  displayName: 'Verify Role Removal'
+  jobs:
+  - job: VerifyJob
+    displayName: 'Verify Role Has Been Removed'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Verify Role Removal'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Verifying role removal..."
+          
+          # Determine the scope
+          case "${{ parameters.scope }}" in
+            "resourceGroup")
+              SCOPE_ID=$(az group show --name "${{ parameters.RESOURCE_GROUP }}" --query id -o tsv)
+              SCOPE_NAME="Resource Group: ${{ parameters.RESOURCE_GROUP }}"
+              ;;
+            "subscription")
+              SCOPE_ID=$(az account show --query id -o tsv)
+              SCOPE_NAME="Subscription: $(az account show --query name -o tsv)"
+              ;;
+            "specificResource")
+              SCOPE_ID=$(az resource show \
+                --name "${{ parameters.resourceName }}" \
+                --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+                --resource-type "${{ parameters.resourceType }}" \
+                --query id -o tsv)
+              SCOPE_NAME="Resource: ${{ parameters.resourceName }} (${{ parameters.resourceType }})"
+              ;;
+          esac
+          
+          echo "Checking if role '${{ parameters.role }}' still exists for principal..."
+          ROLE_STILL_EXISTS=$(az role assignment list \
+            --assignee "${{ parameters.principalId }}" \
+            --role "${{ parameters.role }}" \
+            --scope "$SCOPE_ID" \
+            --query "[].roleDefinitionName" -o tsv)
+          
+          if [ -n "$ROLE_STILL_EXISTS" ]; then
+            echo "❌ ##[error] Role '${{ parameters.role }}' still exists - removal may have failed"
+            exit 1
+          else
+            echo "✅ Confirmed: Role '${{ parameters.role }}' has been successfully removed"
+          fi
+          
+          echo ""
+          echo "========================================"
+          echo "Role Removal Summary:"
+          echo "========================================"
+          echo "- Principal ID: ${{ parameters.principalId }}"
+          echo "- Role Removed: ${{ parameters.role }}"
+          echo "- Scope: $SCOPE_NAME"
+          echo "- Status: ✅ Successfully Removed"
+          echo ""
+          
+          echo "Remaining role assignments for this principal at this scope:"
+          REMAINING_ROLES=$(az role assignment list \
+            --assignee "${{ parameters.principalId }}" \
+            --scope "$SCOPE_ID" \
+            --output table \
+            --query "[].{Role:roleDefinitionName,Scope:scope,Principal:principalName}")
+          
+          if [ -z "$REMAINING_ROLES" ] || [ "$REMAINING_ROLES" = "[]" ]; then
+            echo "ℹ️  No remaining role assignments for this principal at this scope"
+          else
+            echo "$REMAINING_ROLES"
+          fi
+          
+          echo "========================================"
+          echo "✅ Role removal verification completed successfully"
