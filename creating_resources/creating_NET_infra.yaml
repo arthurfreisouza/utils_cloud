@@ -1,0 +1,311 @@
+# filepath: /home/arthur/Desktop/creating_NET_infra.yaml
+name: Create Azure Network Infrastructure with Role Assignment
+
+trigger: none
+
+parameters:
+- name: location
+  type: string
+  default: "eastus"
+- name: RESOURCE_GROUP
+  type: string
+  default: "projArthurreis"
+- name: vnetName
+  displayName: 'Virtual Network Name'
+  type: string
+- name: vnetAddressSpace
+  displayName: 'VNet Address Space (CIDR)'
+  type: string
+  default: '10.0.0.0/16'
+- name: subnetName
+  displayName: 'Subnet Name'
+  type: string
+  default: 'default'
+- name: subnetAddressPrefix
+  displayName: 'Subnet Address Prefix (CIDR)'
+  type: string
+  default: '10.0.1.0/24'
+- name: nsgName
+  displayName: 'Network Security Group Name'
+  type: string
+- name: role
+  displayName: 'Role to Assign'
+  type: string
+  default: 'Network Contributor'
+- name: principalId
+  displayName: 'Principal ID (Object ID) for Role Assignment'
+  type: string
+
+variables:
+- group: Arthur_VG
+
+stages:
+- stage: CheckResources
+  displayName: 'Check Resource Group Stage'
+  jobs:
+  - job: CheckResourceGroup
+    displayName: 'Check or Create Resource Group'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Check or Create Resource Group'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >-
+          echo "Checking if resource group '${{ parameters.RESOURCE_GROUP }}' exists..."
+
+          exists=$(az group exists --name ${{ parameters.RESOURCE_GROUP }})
+
+          echo "az returned: $exists"
+
+          if [ "$exists" = "false" ]; then
+            echo "##[warning] Resource group does not exist. Creating it now..."
+            az group create --name ${{ parameters.RESOURCE_GROUP }} --location ${{ parameters.location }} --only-show-errors
+            echo "✅ Resource group created successfully."
+          else
+            echo "✅ Resource group exists."
+          fi
+
+- stage: ValidateNetwork
+  displayName: 'Validate Azure Network Configuration'
+  jobs:
+  - job: ValidateNetworkNames
+    displayName: 'Validate Network Resource Names'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Validate Network Resource Names'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Validate VNet name
+          if [[ ! "${{ parameters.vnetName }}" =~ ^[a-zA-Z0-9-_\.]{2,64}$ ]]; then
+            echo "##[error] Virtual Network name must be 2-64 characters (alphanumeric, hyphens, underscores, periods)"
+            exit 1
+          fi
+          
+          # Validate NSG name
+          if [[ ! "${{ parameters.nsgName }}" =~ ^[a-zA-Z0-9-_\.]{1,80}$ ]]; then
+            echo "##[error] Network Security Group name must be 1-80 characters (alphanumeric, hyphens, underscores, periods)"
+            exit 1
+          fi
+          
+          # Validate subnet name
+          if [[ ! "${{ parameters.subnetName }}" =~ ^[a-zA-Z0-9-_\.]{1,80}$ ]]; then
+            echo "##[error] Subnet name must be 1-80 characters (alphanumeric, hyphens, underscores, periods)"
+            exit 1
+          fi
+          
+          echo "✅ Network resource names validation passed"
+
+- stage: CreateNetworkSecurityGroup
+  displayName: 'Create Network Security Group'
+  jobs:
+  - job: CreateNSGJob
+    displayName: 'Create NSG'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Create Network Security Group'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Creating Network Security Group: ${{ parameters.nsgName }}"
+
+          az network nsg create \
+            --name "${{ parameters.nsgName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --location "${{ parameters.location }}" \
+            --output table
+          
+          echo "✅ Network Security Group created successfully"
+
+- stage: CreateVirtualNetwork
+  displayName: 'Create Virtual Network'
+  jobs:
+  - job: CreateVNetJob
+    displayName: 'Create VNet and Subnet'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Create Virtual Network with Subnet'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Creating Virtual Network: ${{ parameters.vnetName }}"
+
+          az network vnet create \
+            --name "${{ parameters.vnetName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --location "${{ parameters.location }}" \
+            --address-prefixes "${{ parameters.vnetAddressSpace }}" \
+            --subnet-name "${{ parameters.subnetName }}" \
+            --subnet-prefixes "${{ parameters.subnetAddressPrefix }}" \
+            --output table
+          
+          echo "✅ Virtual Network and Subnet created successfully"
+
+- stage: AssociateNSGToSubnet
+  displayName: 'Associate NSG to Subnet'
+  jobs:
+  - job: AssociateNSGJob
+    displayName: 'Associate NSG to Subnet'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Associate NSG to Subnet'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Associating NSG '${{ parameters.nsgName }}' to subnet '${{ parameters.subnetName }}'"
+
+          az network vnet subnet update \
+            --name "${{ parameters.subnetName }}" \
+            --vnet-name "${{ parameters.vnetName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --network-security-group "${{ parameters.nsgName }}" \
+            --output table
+          
+          echo "✅ NSG associated to subnet successfully"
+
+- stage: WaitForProvisioning
+  displayName: 'Wait for Network Provisioning'
+  jobs:
+  - job: WaitJob
+    displayName: 'Wait 15 seconds'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: Bash@3
+      displayName: 'Sleep for 15 seconds'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "Waiting 15 seconds for network resources to be fully provisioned..."
+          sleep 15
+          echo "✅ Wait completed"
+
+- stage: AssignRole
+  displayName: 'Assign Role to Principal'
+  jobs:
+  - job: AssignRoleJob
+    displayName: 'Assign Role to Network Resources'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Assign Role to Principal'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Assigning role '${{ parameters.role }}' to principal '${{ parameters.principalId }}'"
+
+          # Get Resource Group ID for role assignment scope
+          RG_RESOURCE_ID=$(az group show \
+            --name "${{ parameters.RESOURCE_GROUP }}" \
+            --query id -o tsv)
+          
+          az role assignment create \
+            --assignee "${{ parameters.principalId }}" \
+            --role "${{ parameters.role }}" \
+            --scope "$RG_RESOURCE_ID" \
+            --output table
+          
+          echo "✅ Role assignment completed successfully"
+
+- stage: SmokeTest
+  displayName: 'Smoke Test Network Infrastructure'
+  jobs:
+  - job: SmokeTestJob
+    displayName: 'Verify Network Resources Exist'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Check Network Infrastructure Exists'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Verifying network infrastructure exists..."
+          
+          # Check VNet
+          if az network vnet show --name "${{ parameters.vnetName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ Virtual Network '${{ parameters.vnetName }}' exists."
+          else
+            echo "❌ ##[error] ERROR: Virtual Network '${{ parameters.vnetName }}' does not exist." >&2
+            exit 1
+          fi
+          
+          # Check NSG
+          if az network nsg show --name "${{ parameters.nsgName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ Network Security Group '${{ parameters.nsgName }}' exists."
+          else
+            echo "❌ ##[error] ERROR: Network Security Group '${{ parameters.nsgName }}' does not exist." >&2
+            exit 1
+          fi
+          
+          # Check Subnet
+          if az network vnet subnet show --name "${{ parameters.subnetName }}" --vnet-name "${{ parameters.vnetName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ Subnet '${{ parameters.subnetName }}' exists."
+          else
+            echo "❌ ##[error] ERROR: Subnet '${{ parameters.subnetName }}' does not exist." >&2
+            exit 1
+          fi
+          
+          echo "========================================"
+          echo "Azure Network Infrastructure Details:"
+          echo "========================================"
+          
+          echo ""
+          echo "Virtual Network Details:"
+          az network vnet show \
+            --name "${{ parameters.vnetName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --output table
+          
+          echo ""
+          echo "Network Security Group Details:"
+          az network nsg show \
+            --name "${{ parameters.nsgName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --output table
+          
+          echo ""
+          echo "Subnet Details:"
+          az network vnet subnet show \
+            --name "${{ parameters.subnetName }}" \
+            --vnet-name "${{ parameters.vnetName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --output table
+          
+          echo ""
+          echo "Network Infrastructure Configuration:"
+          echo "- VNet Name: ${{ parameters.vnetName }}"
+          echo "- VNet Address Space: ${{ parameters.vnetAddressSpace }}"
+          echo "- Subnet Name: ${{ parameters.subnetName }}"
+          echo "- Subnet Address Prefix: ${{ parameters.subnetAddressPrefix }}"
+          echo "- NSG Name: ${{ parameters.nsgName }}"
+          echo "- Resource Group: ${{ parameters.RESOURCE_GROUP }}"
+          echo "- Location: ${{ parameters.location }}"
+          echo "- Role Assigned: ${{ parameters.role }}"
+          echo "- Principal ID: ${{ parameters.principalId }}"
+          
+          echo "========================================"
+          echo "✅ Network infrastructure smoke test completed successfully."
