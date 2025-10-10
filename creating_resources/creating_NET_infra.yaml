@@ -97,21 +97,21 @@ stages:
           echo "Subnet Name Length: ${#SUBNET_NAME}"
           
           # Validate VNet name
-          if [[ ! "$VNET_NAME" =~ ^[a-zA-Z0-9-_\.]{2,64}$ ]]; then
+          if [[ ! "$VNET_NAME" =~ ^[a-zA-Z0-9_.-]{2,64}$ ]]; then
             echo "##[error] Virtual Network name '$VNET_NAME' must be 2-64 characters (alphanumeric, hyphens, underscores, periods)"
             echo "##[error] Actual length: ${#VNET_NAME} characters"
             exit 1
           fi
           
           # Validate NSG name
-          if [[ ! "$NSG_NAME" =~ ^[a-zA-Z0-9-_\.]{1,80}$ ]]; then
+          if [[ ! "$NSG_NAME" =~ ^[a-zA-Z0-9_.-]{1,80}$ ]]; then
             echo "##[error] Network Security Group name '$NSG_NAME' must be 1-80 characters (alphanumeric, hyphens, underscores, periods)"
             echo "##[error] Actual length: ${#NSG_NAME} characters"
             exit 1
           fi
           
           # Validate subnet name
-          if [[ ! "$SUBNET_NAME" =~ ^[a-zA-Z0-9-_\.]{1,80}$ ]]; then
+          if [[ ! "$SUBNET_NAME" =~ ^[a-zA-Z0-9_.-]{1,80}$ ]]; then
             echo "##[error] Subnet name '$SUBNET_NAME' must be 1-80 characters (alphanumeric, hyphens, underscores, periods)"
             echo "##[error] Actual length: ${#SUBNET_NAME} characters"
             exit 1
@@ -321,11 +321,6 @@ stages:
           echo "- NSG Name: ${{ parameters.nsgName }}"
           echo "- Resource Group: ${{ parameters.RESOURCE_GROUP }}"
           echo "- Location: ${{ parameters.location }}"
-          echo "- Role Assigned: ${{ parameters.role }}"
-          echo "- Principal ID: ${{ parameters.principalId }}"
-          
-          echo "========================================"
-          echo "✅ Network infrastructure smoke test completed successfully."       echo "- Location: ${{ parameters.location }}"
           echo "- Role Assigned: ${{ parameters.role }}"
           echo "- Principal ID: ${{ parameters.principalId }}"
           
