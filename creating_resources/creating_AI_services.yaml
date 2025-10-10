@@ -1,0 +1,198 @@
+# filepath: /home/arthur/Desktop/utils_cloud/utils_cloud/creating_resources/creating_AI_services.yaml
+name: Create Azure AI Services Resource with Role Assignment
+
+trigger: none
+
+parameters:
+- name: location
+  type: string
+  default: "eastus"
+- name: RESOURCE_GROUP
+  type: string
+  default: "projArthurreis"
+- name: aiServicesName
+  displayName: 'Azure AI Services Resource Name'
+  type: string
+- name: sku
+  displayName: 'Azure AI Services SKU'
+  type: string
+  default: 'S0'
+- name: role
+  displayName: 'Role to Assign'
+  type: string
+  default: 'Cognitive Services User'
+- name: principalId
+  displayName: 'Principal ID (Object ID) for Role Assignment'
+  type: string
+
+variables:
+- group: Arthur_VG
+
+stages:
+- stage: CheckResources
+  displayName: 'Check Resource Group Stage'
+  jobs:
+  - job: CheckResourceGroup
+    displayName: 'Check or Create Resource Group'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Check or Create Resource Group'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >-
+          echo "Checking if resource group '${{ parameters.RESOURCE_GROUP }}' exists..."
+
+          exists=$(az group exists --name ${{ parameters.RESOURCE_GROUP }})
+
+          echo "az returned: $exists"
+
+          if [ "$exists" = "false" ]; then
+            echo "##[warning] Resource group does not exist. Creating it now..."
+            az group create --name ${{ parameters.RESOURCE_GROUP }} --location ${{ parameters.location }} --only-show-errors
+            echo "✅ Resource group created successfully."
+          else
+            echo "✅ Resource group exists."
+          fi
+
+- stage: ValidateAIServices
+  displayName: 'Validate Azure AI Services Configuration'
+  jobs:
+  - job: ValidateAIServicesName
+    displayName: 'Validate Azure AI Services Name'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Validate Azure AI Services Name Format'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          if [[ ! "${{ parameters.aiServicesName }}" =~ ^[a-zA-Z0-9-]{2,64}$ ]]; then
+            echo "##[error] Azure AI Services name must be 2-64 alphanumeric characters and hyphens"
+            exit 1
+          fi
+          echo "✅ Azure AI Services name validation passed"
+
+- stage: CreateAIServices
+  displayName: 'Create Azure AI Services Resource'
+  jobs:
+  - job: CreateAIServicesJob
+    displayName: 'Create Azure AI Services'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Create Azure AI Services Resource'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Creating Azure AI Services resource: ${{ parameters.aiServicesName }}"
+
+          az cognitiveservices account create \
+            --name "${{ parameters.aiServicesName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --location "${{ parameters.location }}" \
+            --kind CognitiveServices \
+            --sku "${{ parameters.sku }}" \
+            --yes \
+            --output table
+          
+          echo "✅ Azure AI Services resource created successfully"
+
+- stage: WaitForProvisioning
+  displayName: 'Wait for Azure AI Services Provisioning'
+  jobs:
+  - job: WaitJob
+    displayName: 'Wait 30 seconds'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: Bash@3
+      displayName: 'Sleep for 30 seconds'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "Waiting 30 seconds for Azure AI Services resource to be fully provisioned..."
+          sleep 30
+          echo "✅ Wait completed"
+
+- stage: AssignRole
+  displayName: 'Assign Role to Principal'
+  jobs:
+  - job: AssignRoleJob
+    displayName: 'Assign Role to Azure AI Services'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Assign Role to Principal'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Assigning role '${{ parameters.role }}' to principal '${{ parameters.principalId }}'"
+
+          AI_RESOURCE_ID=$(az cognitiveservices account show \
+            --name "${{ parameters.aiServicesName }}" \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --query id -o tsv)
+          
+          az role assignment create \
+            --assignee "${{ parameters.principalId }}" \
+            --role "${{ parameters.role }}" \
+            --scope "$AI_RESOURCE_ID" \
+            --output table
+          
+          echo "✅ Role assignment completed successfully"
+
+- stage: SmokeTest
+  displayName: 'Smoke Test Azure AI Services Resource'
+  jobs:
+  - job: SmokeTestJob
+    displayName: 'Verify Azure AI Services Exists'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Check Azure AI Services Exists'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Verifying Azure AI Services resource '${{ parameters.aiServicesName }}' exists..."
+
+          if az cognitiveservices account show --name "${{ parameters.aiServicesName }}" --resource-group "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ Azure AI Services Resource '${{ parameters.aiServicesName }}' exists."
+            
+            echo "========================================"
+            echo "Azure AI Services Resource Details:"
+            echo "========================================"
+            az cognitiveservices account show \
+              --name "${{ parameters.aiServicesName }}" \
+              --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+              --output table
+            
+            echo ""
+            echo "Azure AI Services Configuration:"
+            echo "- Name: ${{ parameters.aiServicesName }}"
+            echo "- Resource Group: ${{ parameters.RESOURCE_GROUP }}"
+            echo "- Location: ${{ parameters.location }}"
+            echo "- SKU: ${{ parameters.sku }}"
+            echo "- Role Assigned: ${{ parameters.role }}"
+            echo "- Principal ID: ${{ parameters.principalId }}"
+            
+            echo "========================================"
+          else
+            echo "❌ ##[error] ERROR: Azure AI Services Resource '${{ parameters.aiServicesName }}' does not exist in resource group ${{ parameters.RESOURCE_GROUP }} or an error occurred." >&2
+            exit 1
+          fi
+
+          echo "✅ Smoke test completed successfully."
