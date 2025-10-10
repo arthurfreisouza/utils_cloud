@@ -1,0 +1,244 @@
+name: Create Azure Resource Group with Role Assignment
+
+trigger: none
+
+parameters:
+- name: location
+  type: string
+  default: "eastus"
+- name: RESOURCE_GROUP
+  type: string
+  displayName: 'Resource Group Name'
+- name: tags
+  displayName: 'Resource Group Tags (JSON format)'
+  type: string
+  default: '{"Environment":"Development","Owner":"Arthur","Project":"Utils_Cloud"}'
+- name: role
+  displayName: 'Role to Assign'
+  type: string
+  default: 'Contributor'
+- name: principalId
+  displayName: 'Principal ID (Object ID) for Role Assignment'
+  type: string
+
+variables:
+- group: Arthur_VG
+
+stages:
+- stage: ValidateResourceGroup
+  displayName: 'Validate Resource Group Configuration'
+  jobs:
+  - job: ValidateRGConfig
+    displayName: 'Validate Resource Group Configuration'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Validate Resource Group Configuration'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Validate Resource Group name
+          if [[ ! "${{ parameters.RESOURCE_GROUP }}" =~ ^[a-zA-Z0-9._\(\)-]{1,90}$ ]]; then
+            echo "##[error] Resource Group name must be 1-90 characters (alphanumeric, periods, underscores, hyphens, parentheses)"
+            exit 1
+          fi
+          
+          # Check if resource group name ends with period
+          if [[ "${{ parameters.RESOURCE_GROUP }}" == *. ]]; then
+            echo "##[error] Resource Group name cannot end with a period"
+            exit 1
+          fi
+          
+          # Validate location
+          VALID_LOCATIONS=$(az account list-locations --query "[].name" -o tsv)
+          if ! echo "$VALID_LOCATIONS" | grep -q "^${{ parameters.location }}$"; then
+            echo "##[error] Invalid location: ${{ parameters.location }}"
+            echo "Valid locations: $VALID_LOCATIONS"
+            exit 1
+          fi
+          
+          # Validate JSON tags format
+          if ! echo '${{ parameters.tags }}' | jq empty 2>/dev/null; then
+            echo "##[error] Tags must be in valid JSON format"
+            exit 1
+          fi
+          
+          echo "✅ Resource Group configuration validation passed"
+
+- stage: CheckExistingResourceGroup
+  displayName: 'Check Existing Resource Group'
+  jobs:
+  - job: CheckRGExists
+    displayName: 'Check if Resource Group Exists'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Check Resource Group Existence'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Checking if resource group '${{ parameters.RESOURCE_GROUP }}' exists..."
+          
+          exists=$(az group exists --name ${{ parameters.RESOURCE_GROUP }})
+          echo "Resource group exists: $exists"
+          
+          if [ "$exists" = "true" ]; then
+            echo "##[warning] Resource group '${{ parameters.RESOURCE_GROUP }}' already exists."
+            echo "Existing resource group details:"
+            az group show --name "${{ parameters.RESOURCE_GROUP }}" --output table
+          else
+            echo "✅ Resource group '${{ parameters.RESOURCE_GROUP }}' does not exist. Ready to create."
+          fi
+
+- stage: CreateResourceGroup
+  displayName: 'Create Resource Group'
+  jobs:
+  - job: CreateRGJob
+    displayName: 'Create Resource Group'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Create Resource Group'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Creating Resource Group: ${{ parameters.RESOURCE_GROUP }}"
+
+          az group create \
+            --name "${{ parameters.RESOURCE_GROUP }}" \
+            --location "${{ parameters.location }}" \
+            --tags '${{ parameters.tags }}' \
+            --output table
+          
+          echo "✅ Resource Group created successfully"
+
+- stage: WaitForProvisioning
+  displayName: 'Wait for Resource Group Provisioning'
+  jobs:
+  - job: WaitJob
+    displayName: 'Wait 10 seconds'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: Bash@3
+      displayName: 'Sleep for 10 seconds'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "Waiting 10 seconds for Resource Group to be fully provisioned..."
+          sleep 10
+          echo "✅ Wait completed"
+
+- stage: AssignRole
+  displayName: 'Assign Role to Principal'
+  jobs:
+  - job: AssignRoleJob
+    displayName: 'Assign Role to Resource Group'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Assign Role to Principal'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: >
+          echo "Assigning role '${{ parameters.role }}' to principal '${{ parameters.principalId }}'"
+
+          # Get Resource Group ID for role assignment scope
+          RG_RESOURCE_ID=$(az group show \
+            --name "${{ parameters.RESOURCE_GROUP }}" \
+            --query id -o tsv)
+          
+          az role assignment create \
+            --assignee "${{ parameters.principalId }}" \
+            --role "${{ parameters.role }}" \
+            --scope "$RG_RESOURCE_ID" \
+            --output table
+          
+          echo "✅ Role assignment completed successfully"
+
+- stage: SmokeTest
+  displayName: 'Smoke Test Resource Group'
+  jobs:
+  - job: SmokeTestJob
+    displayName: 'Verify Resource Group Exists'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Check Resource Group Exists'
+      inputs:
+        azureSubscription: $(service_conn)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Verifying Resource Group exists..."
+          
+          # Check Resource Group
+          if az group show --name "${{ parameters.RESOURCE_GROUP }}" &> /dev/null; then
+            echo "✅ Resource Group '${{ parameters.RESOURCE_GROUP }}' exists."
+          else
+            echo "❌ ##[error] ERROR: Resource Group '${{ parameters.RESOURCE_GROUP }}' does not exist." >&2
+            exit 1
+          fi
+          
+          # Get Resource Group details
+          echo "========================================"
+          echo "Azure Resource Group Details:"
+          echo "========================================"
+          
+          echo ""
+          echo "Resource Group Overview:"
+          az group show \
+            --name "${{ parameters.RESOURCE_GROUP }}" \
+            --output table
+          
+          echo ""
+          echo "Resource Group Tags:"
+          az group show \
+            --name "${{ parameters.RESOURCE_GROUP }}" \
+            --query tags \
+            --output table
+          
+          echo ""
+          echo "Resources in Resource Group:"
+          RESOURCE_COUNT=$(az resource list --resource-group "${{ parameters.RESOURCE_GROUP }}" --query "length(@)")
+          echo "Total resources: $RESOURCE_COUNT"
+          
+          if [ "$RESOURCE_COUNT" -gt 0 ]; then
+            az resource list \
+              --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+              --output table
+          else
+            echo "No resources found in the resource group (this is expected for a new resource group)."
+          fi
+          
+          echo ""
+          echo "Role Assignments:"
+          az role assignment list \
+            --resource-group "${{ parameters.RESOURCE_GROUP }}" \
+            --query "[?principalId=='${{ parameters.principalId }}'].{Role:roleDefinitionName,Principal:principalId}" \
+            --output table
+          
+          echo ""
+          echo "Resource Group Configuration:"
+          echo "- Name: ${{ parameters.RESOURCE_GROUP }}"
+          echo "- Location: ${{ parameters.location }}"
+          echo "- Tags: ${{ parameters.tags }}"
+          echo "- Role Assigned: ${{ parameters.role }}"
+          echo "- Principal ID: ${{ parameters.principalId }}"
+          echo "- Resource Count: $RESOURCE_COUNT"
+          
+          echo "========================================"
+          echo "✅ Resource Group smoke test completed successfully."
